@@ -1,5 +1,6 @@
 import { createSlice } from '@reduxjs/toolkit';
 import type { PayloadAction } from '@reduxjs/toolkit';
+import s from '@/lib/settings';
 
 export interface HorizontalSpeedState {
   value: number;
@@ -14,10 +15,10 @@ export const horizontalSpeedSlice = createSlice({
   initialState,
   reducers: {
     increment: (state) => {
-      state.value += 0.5;
+      state.value += s.HORUZONTAL_SPEED;
     },
     decrement: (state) => {
-      state.value -= 0.5;
+      state.value -= s.HORUZONTAL_SPEED;
     },
     resetHorizontalSpeed: (state) => {
       state.value = 0;

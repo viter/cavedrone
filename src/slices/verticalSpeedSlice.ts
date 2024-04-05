@@ -1,4 +1,5 @@
 import { createSlice } from '@reduxjs/toolkit';
+import s from '@/lib/settings';
 
 export interface VerticalSpeedState {
   value: number;
@@ -13,10 +14,10 @@ export const verticalSpeedSlice = createSlice({
   initialState,
   reducers: {
     vincrement: (state) => {
-      state.value += 2;
+      state.value += s.VERTICAL_SPEED;
     },
     vdecrement: (state) => {
-      state.value -= 2;
+      state.value -= s.VERTICAL_SPEED;
     },
     resetVerticalSpeed: (state) => {
       state.value = 0;
