@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 //import { cave } from '../temp';
 import { Polygon, createPolygon, testForCollision } from '../lib/collisionCheck';
 import Gauges from './Gauges';
@@ -10,6 +10,7 @@ import { setGameOver, setGameWin, updateLoad } from '@/slices/gameSlice';
 import { store } from '@/app/store';
 import Loader from './Loader';
 import { RootState } from '../app/store';
+import s from '@/lib/settings';
 
 export default function Game() {
   const loading = useSelector((state: RootState) => state.game.gameState.loading);
@@ -18,11 +19,13 @@ export default function Game() {
   const wallsLeftSvg = useRef([]);
   const wallsRightSvg = useRef([]);
   const caveData = useRef([]);
-  const counter = useRef([]);
+  const caveDataRest = useRef([]);
+  const counter = useRef(0);
+  const gameStarted = useRef(false);
+  const socket = useRef(null);
 
   const dispatch = useDispatch();
 
-  const yDelta = 30;
   const playerName = store.getState().game.gameState.name;
   const level = store.getState().game.gameState.level;
 
@@ -33,7 +36,7 @@ export default function Game() {
   let horizontalSpeed = 0;
   let stopGame = false;
 
-  //const [start, setStart] = useState(false);
+  const [start, setStart] = useState(false);
 
   useEffect(() => {
     init()
@@ -49,27 +52,37 @@ export default function Game() {
             data.forEach((entry) => {
               token += entry.chunk;
             });
-            const socket = new WebSocket('wss://cave-drone-server.shtoa.xyz/cave');
+            socket.current = new WebSocket('wss://cave-drone-server.shtoa.xyz/cave');
 
-            socket.addEventListener('open', () => {
-              socket.send(`player:${id}-${token}`);
-            });
+            socket.current.onopen = () => {
+              socket.current.send(`player:${id}-${token}`);
+            };
 
-            socket.addEventListener('message', (event) => {
-              caveData.current.push(event.data);
+            socket.current.onmessage = (event) => {
+              if (caveData.current.length < 200) {
+                caveData.current.push(event.data);
 
-              counter.current.push(0);
+                counter.current++;
 
-              if (counter.current.length === 100) {
-                dispatch(updateLoad());
-                counter.current = [];
+                if (counter.current === 20) {
+                  dispatch(updateLoad());
+                  counter.current = 0;
+                }
+              } else {
+                caveDataRest.current.push(event.data);
               }
-            });
 
-            socket.addEventListener('close', () => {
-              moveDrone();
-              drawCave();
-            });
+              if (caveData.current.length >= 200 && !gameStarted.current) {
+                gameStarted.current = true;
+                setStart(true);
+              }
+            };
+
+            socket.current.onclose = (event) => {
+              if (event.code !== 3010) {
+                drawCave(true);
+              }
+            };
           })
           .catch((err) => console.log('TOKEN ERROR: ', err));
       })
@@ -78,13 +91,17 @@ export default function Game() {
   }, []);
 
   useEffect(() => {
+    if (start) {
+      drawCave();
+      moveDrone();
+    }
     window.addEventListener('keydown', handleKeyDown);
 
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [start]);
 
   async function init() {
     const response = await fetch('https://cave-drone-server.shtoa.xyz/init', {
@@ -196,6 +213,7 @@ export default function Game() {
           testForCollision(dronePolygon, wallRightPolygon);
         if (colisionDetected) {
           stopGame = true;
+          socket.current.close(3010);
           dispatch(setGameOver(true));
         }
         if (pointsArrL[1] < dd.y1) {
@@ -204,7 +222,10 @@ export default function Game() {
           if (Array.from(idsSet).length > length) {
             dispatch(updateScore(3 * (verticalSpeed + level)));
             length = Array.from(idsSet).length;
-            if (Array.from(idsSet).length >= caveData.current.length - 2) {
+            if (
+              Array.from(idsSet).length >=
+              caveData.current.length + caveDataRest.current.length - 5
+            ) {
               stopGame = true;
               dispatch(setGameOver(true));
               dispatch(setGameWin(true));
@@ -221,60 +242,97 @@ export default function Game() {
 
   function handleKeyDown(e: KeyboardEvent) {
     if (e.key === 'ArrowRight') {
-      if (horizontalSpeed < 3) {
+      if (horizontalSpeed < s.HORIZONTAL_SPEED_LIMIT) {
         horizontalSpeed += 0.5;
         dispatch(increment());
       }
     }
 
     if (e.key === 'ArrowLeft') {
-      if (horizontalSpeed > -3) {
+      if (horizontalSpeed > -s.HORIZONTAL_SPEED_LIMIT) {
         horizontalSpeed -= 0.5;
         dispatch(decrement());
       }
     }
 
     if (e.key === 'ArrowUp') {
-      if (verticalSpeed < 10) {
-        verticalSpeed += 2;
+      if (verticalSpeed < s.VERTICAL_SPEED_LIMIT) {
+        verticalSpeed += s.VERTICAL_SPEED;
         dispatch(vincrement());
       }
     }
 
     if (e.key === 'ArrowDown') {
       if (verticalSpeed > 0) {
-        verticalSpeed -= 2;
+        verticalSpeed -= s.VERTICAL_SPEED;
         dispatch(vdecrement());
       }
     }
   }
 
-  function drawCave() {
-    let y = 300;
-    for (let i = 0; i < caveData.current.length; i++) {
-      if (caveData.current[i] !== 'finished' && caveData.current[i + 1] !== 'finished') {
-        const wallLeft1 = Number(caveData.current[i].split(',')[0]);
-        const wallLeft2 = Number(caveData.current[i + 1].split(',')[0]);
-        const wallRight1 = Number(caveData.current[i].split(',')[1]);
-        const wallRight2 = Number(caveData.current[i + 1].split(',')[1]);
+  function drawCave(update = false) {
+    let y = 0;
+    let cave = [];
+    caveData.current.push('finished');
+    let idDelta = 0;
 
+    if (update) {
+      const points = wallsLeftSvg.current[wallsLeftSvg.current.length - 1].getAttributeNS(
+        null,
+        'points',
+      );
+      idDelta = Number(
+        wallsLeftSvg.current[wallsLeftSvg.current.length - 1].getAttributeNS(null, 'id'),
+      );
+      y = Number(points.split(', ')[1]) + s.Y_DELTA;
+      cave = caveDataRest.current;
+    } else {
+      y = 300;
+      cave = caveData.current;
+    }
+    for (let i = 0; i < cave.length; i++) {
+      if (cave[i] !== 'finished' && cave[i + 1] !== 'finished') {
+        let wallLeft1: number;
+        let wallLeft2: number;
+        let wallRight1: number;
+        let wallRight2: number;
+        if (update) {
+          if (i === 0) {
+            wallLeft1 = Number(caveData.current[caveData.current.length - 3].split(',')[0]);
+            wallLeft2 = Number(cave[i + 1].split(',')[0]);
+            wallRight1 = Number(caveData.current[caveData.current.length - 3].split(',')[1]);
+            wallRight2 = Number(cave[i + 1].split(',')[1]);
+          } else {
+            wallLeft1 = Number(cave[i].split(',')[0]);
+            wallLeft2 = Number(cave[i + 1].split(',')[0]);
+            wallRight1 = Number(cave[i].split(',')[1]);
+            wallRight2 = Number(cave[i + 1].split(',')[1]);
+          }
+        } else {
+          wallLeft1 = Number(cave[i].split(',')[0]);
+          wallLeft2 = Number(cave[i + 1].split(',')[0]);
+          wallRight1 = Number(cave[i].split(',')[1]);
+          wallRight2 = Number(cave[i + 1].split(',')[1]);
+        }
         let newPoligon = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
         newPoligon.setAttribute(
           'points',
-          `0, ${y}, ${250 + wallLeft1}, ${y}, ${250 + wallLeft2}, ${y + yDelta}, 0, ${y + yDelta}`,
+          `0, ${y}, ${250 + wallLeft1}, ${y}, ${250 + wallLeft2}, ${y + s.Y_DELTA}, 0, ${
+            y + s.Y_DELTA
+          }`,
         );
-        newPoligon.setAttribute('id', String(i + 1));
+        newPoligon.setAttribute('id', String(i + idDelta + 1));
         wallsLeftSvg.current.push(newPoligon);
 
         newPoligon = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
         newPoligon.setAttribute(
           'points',
-          `${250 + wallRight1}, ${y}, 500, ${y}, 500, ${y + yDelta}, ${250 + wallRight2}, ${
-            y + yDelta
+          `${250 + wallRight1}, ${y}, 500, ${y}, 500, ${y + s.Y_DELTA}, ${250 + wallRight2}, ${
+            y + s.Y_DELTA
           }`,
         );
         wallsRightSvg.current.push(newPoligon);
-        y += yDelta;
+        y += s.Y_DELTA;
       }
     }
 
